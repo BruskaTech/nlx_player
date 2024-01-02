@@ -15,7 +15,6 @@ mod utilities;
 use utilities::*;
 
 mod nlx_header;
-mod as_result;
 
 fn main() -> Result<(), Box<dyn Error>>{
     let path = "/Users/bruskajp/Downloads/csc_data/".to_owned();
