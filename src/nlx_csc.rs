@@ -1,10 +1,12 @@
-use std::{error::Error, path::Path, fs::File, collections::HashMap, io::{self, Read, BufReader}};
+use std::{error::Error, path::Path, fs::File, io::{self, Read, BufReader}};
 
-use super::utilities::*;
 
+use super::nlx_header::*;
+use super::nlx_udp::*;
 
 const NLX_CSC_RECORD_SIZE: usize = 1044;
-#[derive(Debug, PartialEq)]
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct NlxCscRecord {
     pub timestamp: u64,
     pub channel_number: u32,
@@ -12,6 +14,7 @@ pub struct NlxCscRecord {
     pub number_of_valid_samples: u32,
     pub samples: [i16; 512],
 }
+
 impl NlxCscRecord {
     pub fn new() -> NlxCscRecord {
         NlxCscRecord {
@@ -37,61 +40,40 @@ impl NlxCscRecord {
             samples: samples.try_into().unwrap(),
         })
     }
-}
 
-const NLX_CSC_HEADER_SIZE: usize = 16384;
-#[derive(Debug, PartialEq)]
-pub struct NlxCscHeader {
-    pub dict: HashMap<String, String>,
-}
-impl NlxCscHeader {
-    pub fn new() -> NlxCscHeader {
-        NlxCscHeader {
-            dict: HashMap::new(),
-        }
+    pub fn serialize(&self) -> Result<[u8; NLX_CSC_RECORD_SIZE], Box<dyn Error>> {
+        let mut data = [0; NLX_CSC_RECORD_SIZE];
+
+        data[0..8].copy_from_slice(&self.timestamp.to_le_bytes());
+        data[8..12].copy_from_slice(&self.channel_number.to_le_bytes());
+        data[12..16].copy_from_slice(&self.sample_frequency.to_le_bytes());
+        data[16..20].copy_from_slice(&self.number_of_valid_samples.to_le_bytes());
+        data[20..].copy_from_slice(&self.samples.iter().map(|x| x.to_le_bytes()).flatten().collect::<Vec<u8>>());
+
+        Ok(data)
     }
-
-    pub fn deserialize(data: &[u8; NLX_CSC_HEADER_SIZE]) -> Result<NlxCscHeader, Box<dyn Error>> {
-        let mut hashmap = HashMap::new();
-
-        let string = from_ut8_unaligned(data)?;
-
-        for line in string.lines() {
-            if !line.starts_with('-') {
-                continue;
-            }
-            
-            if let Some((key, value)) = line.split_once(' ') {
-                hashmap.insert(key[1..].to_string(), value.to_string());
-            }
-        }
-    
-        Ok(NlxCscHeader {
-            dict: hashmap,
-        })
-    }
-
 }
 
 #[derive(Debug, PartialEq)]
 pub struct NlxCscFile {
-    pub header: NlxCscHeader,
+    pub header: NlxHeader,
     pub records: Vec<NlxCscRecord>,
 }
+
 impl NlxCscFile {
     pub fn open<P: AsRef<Path>>(path: P, num_records: Option<u64>) -> Result<NlxCscFile, Box<dyn Error>> {
         let file = File::open(&path)?;
         let mut reader = io::BufReader::new(file);
         
         // Get header
-        let mut data = [0; NLX_CSC_HEADER_SIZE];
+        let mut data = [0; NLX_HEADER_SIZE];
         reader.read_exact(&mut data)?;
-        let header = NlxCscHeader::deserialize(&data)?;
+        let header = NlxHeader::deserialize(&data)?;
 
         // Get all data records
         let mut records = Vec::new();
         let file_size = std::fs::metadata(path)?.len();
-        let records_size = file_size - NLX_CSC_HEADER_SIZE as u64;
+        let records_size = file_size - NLX_HEADER_SIZE as u64;
 
         // if file_size % NLX_CSC_RECORD_SIZE as u64 != 0 {
         //     return Err("File has extra bytes after record. The file may be corrupted.".into());
@@ -120,19 +102,20 @@ pub struct NlxCscFileIterator {
     num_records: u64,
     current_record: u64,
 }
+
 impl NlxCscFileIterator {
-    pub fn new<P: AsRef<Path>>(path: P, num_records: Option<u64>) -> Result<(NlxCscHeader, NlxCscFileIterator), Box<dyn Error>> {
+    pub fn new<P: AsRef<Path>>(path: P, num_records: Option<u64>) -> Result<(NlxHeader, NlxCscFileIterator), Box<dyn Error>> {
         let file = File::open(&path)?;
         let mut reader = BufReader::new(file);
 
         let header = {
-            let mut data = [0; NLX_CSC_HEADER_SIZE];
+            let mut data = [0; NLX_HEADER_SIZE];
             reader.read_exact(&mut data)?;
-            NlxCscHeader::deserialize(&data)?
+            NlxHeader::deserialize(&data)?
         };
 
         let file_size = std::fs::metadata(path)?.len();
-        let records_size = file_size - NLX_CSC_HEADER_SIZE as u64;
+        let records_size = file_size - NLX_HEADER_SIZE as u64;
         let num_records = num_records.unwrap_or(records_size / NLX_CSC_RECORD_SIZE as u64);
 
         Ok((header,
@@ -144,6 +127,7 @@ impl NlxCscFileIterator {
         ))
     }
 }
+
 impl Iterator for NlxCscFileIterator {
     type Item = Result<NlxCscRecord, Box<dyn Error>>;
 
@@ -165,7 +149,6 @@ impl Iterator for NlxCscFileIterator {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,9 +161,6 @@ mod tests {
         assert_eq!(nlx_csc_record.sample_frequency, 0);
         assert_eq!(nlx_csc_record.number_of_valid_samples, 0);
         assert_eq!(nlx_csc_record.samples, [0; 512]);
-
-        let nlx_csc_header = NlxCscHeader::new();
-        assert_eq!(nlx_csc_header.dict, HashMap::new());
     }
 
     #[test]
